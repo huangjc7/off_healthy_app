@@ -14,9 +14,10 @@ import (
 	"time"
 )
 
-func main() {
-	var err error
-	var config *rest.Config
+var err error
+var config *rest.Config
+
+func getKubeConfig() *kubernetes.Clientset {
 
 	kubeconfig := fmt.Sprintf("%s%s", os.Getenv("HOME"), "/.kube/config")
 	if config, err = rest.InClusterConfig(); err != nil {
@@ -24,20 +25,33 @@ func main() {
 			panic(err.Error())
 		}
 	}
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		panic(err.Error())
 	}
+	return clientset
+}
+func createInformer(clientset *kubernetes.Clientset, listTime time.Duration) {
+
+}
+func main() {
+	clientset := getKubeConfig()
+	createInformer(clientset, time.Minute*5)
+	//写到这里啦
 
 	//创建informer
 	informerFactory := informers.NewSharedInformerFactory(clientset, time.Minute*5)
 	//对pod监听
 	podInformer := informerFactory.Core().V1().Pods()
+	deployInformer := informerFactory.Apps().V1().Deployments()
 
-	informer := podInformer.Informer()
-	podLister := podInformer.Lister()
+	pinformer := podInformer.Informer()
+	//podLister := podInformer.Lister()
+	//dinformer := deployInformer.Informer()
+	deployLister := deployInformer.Lister()
 
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	pinformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    onAdd,
 		UpdateFunc: onUpdate,
 		DeleteFunc: onDelete,
@@ -49,17 +63,31 @@ func main() {
 	informerFactory.Start(stopCh)
 	informerFactory.WaitForCacheSync(stopCh)
 
-	pod, err := podLister.Pods("kube-system").List(labels.Everything())
+	//pod, err := podLister.Pods("default").List(labels.Everything())
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+
+	deploy, err := deployLister.Deployments("default").List(labels.Everything())
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for k, v := range pod {
-		//获取pod状态
-		fmt.Printf("%d -> %v\n", k+1, v.Status.Phase)
-		//获取pod重启次数
-		for _, v := range v.Status.ContainerStatuses {
-			fmt.Println(v.RestartCount)
+	//deploySlice := make([]string, 10, 10)
+
+	//var percentage float32
+	for _, dp := range deploy {
+		//判断deployment是否是属于开启状态 不等于0 为开启
+		if dp.Status.UpdatedReplicas != 0 {
+			//判断当前运行的pod  等于0就是未运行
+			if dp.Status.AvailableReplicas == 0 {
+				var replicas int32 = 0
+				dp.Spec.Replicas = &replicas
+				_, err := clientset.AppsV1().Deployments("default").Update(dp)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
 		}
 	}
 
@@ -67,17 +95,17 @@ func main() {
 }
 
 func onAdd(obj interface{}) {
-	pod := obj.(*v1.Pod) //断言 是否是deployment类型
-	fmt.Println("add a pod:", pod.Name)
+	//pod := obj.(*v1.Pod) //断言 是否是deployment类型
+	//fmt.Println("add deployment:", pod.Name)
 }
 
 func onUpdate(old, new interface{}) {
-	oldpod := old.(*v1.Pod) //断言 是否是deployment类型
-	newpod := new.(*v1.Pod)
-	fmt.Println("update pod:", oldpod.Name, newpod.Name)
+	//oldpod := old.(*v1.Pod) //断言 是否是deployment类型
+	//newpod := new.(*v1.Pod)
+	//fmt.Println("update deployment:", oldpod.Name, newpod.Name)
 }
 
 func onDelete(obj interface{}) {
 	pod := obj.(*v1.Pod) //断言 是否是deployment类型
-	fmt.Println("delete a pod:", pod.Name)
+	fmt.Println("[off unhealthy app] delete pod:", pod.Name)
 }
