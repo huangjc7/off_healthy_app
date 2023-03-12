@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
-	v1 "k8s.io/api/core/v1"
+	podV1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	deployV1 "k8s.io/client-go/listers/apps/v1"
+	podInformerV1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -18,7 +20,6 @@ var err error
 var config *rest.Config
 
 func getKubeConfig() *kubernetes.Clientset {
-
 	kubeconfig := fmt.Sprintf("%s%s", os.Getenv("HOME"), "/.kube/config")
 	if config, err = rest.InClusterConfig(); err != nil {
 		if config, err = clientcmd.BuildConfigFromFlags("", kubeconfig); err != nil {
@@ -32,50 +33,32 @@ func getKubeConfig() *kubernetes.Clientset {
 	}
 	return clientset
 }
-func createInformer(clientset *kubernetes.Clientset, listTime time.Duration) {
 
-}
-func main() {
-	clientset := getKubeConfig()
-	createInformer(clientset, time.Minute*5)
-	//写到这里啦
-
+func createInformer(clientset *kubernetes.Clientset, listTime time.Duration) (informers.SharedInformerFactory, deployV1.DeploymentLister, podInformerV1.PodLister) {
+	//func createInformer(clientset *kubernetes.Clientset, listTime time.Duration) (informers.SharedInformerFactory, deployV1.DeploymentLister) {
 	//创建informer
-	informerFactory := informers.NewSharedInformerFactory(clientset, time.Minute*5)
+	informerFactory := informers.NewSharedInformerFactory(clientset, listTime)
 	//对pod监听
 	podInformer := informerFactory.Core().V1().Pods()
 	deployInformer := informerFactory.Apps().V1().Deployments()
 
 	pinformer := podInformer.Informer()
-	//podLister := podInformer.Lister()
-	//dinformer := deployInformer.Informer()
+	podLister := podInformer.Lister()
 	deployLister := deployInformer.Lister()
-
 	pinformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    onAdd,
 		UpdateFunc: onUpdate,
 		DeleteFunc: onDelete,
 	})
+	return informerFactory, deployLister, podLister
+	//return informerFactory, deployLister
 
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-
-	informerFactory.Start(stopCh)
-	informerFactory.WaitForCacheSync(stopCh)
-
-	//pod, err := podLister.Pods("default").List(labels.Everything())
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-
-	deploy, err := deployLister.Deployments("default").List(labels.Everything())
+}
+func offDeploymentUnHealthy(deployLister deployV1.DeploymentLister, namespace string, clientset *kubernetes.Clientset) error {
+	deploy, err := deployLister.Deployments(namespace).List(labels.Everything())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-
-	//deploySlice := make([]string, 10, 10)
-
-	//var percentage float32
 	for _, dp := range deploy {
 		//判断deployment是否是属于开启状态 不等于0 为开启
 		if dp.Status.UpdatedReplicas != 0 {
@@ -83,29 +66,63 @@ func main() {
 			if dp.Status.AvailableReplicas == 0 {
 				var replicas int32 = 0
 				dp.Spec.Replicas = &replicas
-				_, err := clientset.AppsV1().Deployments("default").Update(dp)
+				_, err := clientset.AppsV1().Deployments(dp.Namespace).Update(dp)
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 			}
 		}
 	}
-
-	<-stopCh
+	return nil
 }
 
-func onAdd(obj interface{}) {
-	//pod := obj.(*v1.Pod) //断言 是否是deployment类型
-	//fmt.Println("add deployment:", pod.Name)
+func getDeploymentName(rsName string) {
+
 }
 
-func onUpdate(old, new interface{}) {
-	//oldpod := old.(*v1.Pod) //断言 是否是deployment类型
-	//newpod := new.(*v1.Pod)
-	//fmt.Println("update deployment:", oldpod.Name, newpod.Name)
+func getNotReadyPods(podLister podInformerV1.PodLister, namespace string, restartNumber int32) error {
+	pod, err := podLister.Pods(namespace).List(labels.Everything())
+	if err != nil {
+		return err
+	}
+	for _, p := range pod {
+		//for _, containerStatuses := range p.Status.ContainerStatuses {
+		//	//for _, owner := range p.OwnerReferences {
+		//	//	//if containerStatuses.RestartCount >= restartNumber {
+		//	//	//	//if containerStatuses.Ready == false {
+		//	//	//	//	//containerName := make([]string, 1)
+		//	//	//	//	//containerName = owner.Name
+		//	//	//	//	//getDeploymentName(owner.Name)
+		//	//	//	//}
+		//	//	//}
+		//	//}
+		//}
+	}
+	return nil
 }
+
+func main() {
+	clientset := getKubeConfig()
+	stopCh := make(chan struct{})
+	//informerFactory, deployLister := createInformer(clientset, time.Minute*5)
+	informerFactory, deployLister, podLister := createInformer(clientset, time.Minute*5)
+	informerFactory.Start(stopCh)
+	informerFactory.WaitForCacheSync(stopCh)
+	err := getNotReadyPods(podLister, "", 5)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := offDeploymentUnHealthy(deployLister, "hjc", clientset); err != nil {
+		log.Fatal(err)
+	}
+	select {}
+}
+
+func onAdd(obj interface{}) {}
+
+func onUpdate(old, new interface{}) {}
 
 func onDelete(obj interface{}) {
-	pod := obj.(*v1.Pod) //断言 是否是deployment类型
-	fmt.Println("[off unhealthy app] delete pod:", pod.Name)
+	pod := obj.(*podV1.Pod) //断言 是否是deployment类型
+	fmt.Printf("[off unhealthy app] Delete Pod Namespace:%s Pod Name: %s\n", pod.Namespace, pod.Name)
 }
